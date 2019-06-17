@@ -95,9 +95,10 @@ class CymbolCheckerVisitor(CymbolVisitor):
 
         block_string = self.visit(ctx.block())
         block_string = block_string.replace('ret xxxange', 'ret ' + ret_type)
+        params_types = [x for x in self.func_params.values()]
+        self.funcs_types[func_id] = (tipo, params_types)
         self.func_params = {}
         self.func_vars = {}
-        self.funcs_types[func_id] = tipo
         print(func_str + param_string + block_string)
 
     def visitBlock(self, ctx: CymbolParser.BlockContext):
@@ -135,8 +136,8 @@ class CymbolCheckerVisitor(CymbolVisitor):
         self.var_list.append(var_name)
         vardecl_str = "\n  %{} = alloca {}, align {}".format(
             self.var_list.index(var_name) + 1, tipo, self.alignes[tipo])
+        self.func_vars[var_name] = (0, tipo)
         if ctx.expr() != None:
-            self.func_vars[var_name] = (0, tipo)
             result, expr_str = self.visit(ctx.expr())
             self.func_vars[var_name] = (result, tipo)
             vardecl_str += expr_str
@@ -148,6 +149,9 @@ class CymbolCheckerVisitor(CymbolVisitor):
         result = None
         if ctx.expr() != None:
             result, expr_str = self.visit(ctx.expr())
+
+        if "%" not in result and self.actual_func_type == 'zeroext i1':
+            result = "true" if result else "false"
 
         return result, expr_str
 
@@ -164,7 +168,7 @@ class CymbolCheckerVisitor(CymbolVisitor):
 
         assign_str = "\n  store {} {}, {}* %{}, align {}".format(
             tipo, result, tipo, idx, self.alignes[tipo])
-        if "%" in result:
+        if result and "%" in result:
             assign_str = expr_str + assign_str
         return assign_str
 
@@ -179,11 +183,12 @@ class CymbolCheckerVisitor(CymbolVisitor):
         exprs = [x for x in ctx.children if isinstance(
             x, CymbolParser.ExprContext)]
         expr_list_str = ""
-        for expr in exprs:
+        for i, expr in enumerate(exprs):
             result = self.visit(expr)
             if result is not None:
                 tmp_var_idx, vis_string = result
-                tipo = self.func_vars['%{}'.format(tmp_var_idx + 1)][1]
+                func_name = ctx.parentCtx.ID().getText()
+                tipo = self.funcs_types[func_name][1][i]
                 expr_list_str += "{} {}".format(tipo, tmp_var_idx)
                 if expr != exprs[-1]:
                     expr_list_str += ", "
@@ -198,9 +203,8 @@ class CymbolCheckerVisitor(CymbolVisitor):
                 tmp_var_idx = len(self.var_list) + 1
                 tmp_var_str = "%" + str(tmp_var_idx)
                 self.var_list.append(tmp_var_str)
-
                 func_id = ctx.ID().getText()
-                func_type = self.funcs_types[func_id]
+                func_type = self.funcs_types[func_id][0]
                 expr_str = "\n  "
                 expr_str += "%{} = call {} @{}(".format(tmp_var_idx,
                                                         func_type, func_id)
@@ -299,47 +303,103 @@ class CymbolCheckerVisitor(CymbolVisitor):
         if ctx.op is not None:
             left = ctx.expr()[0].accept(self)
             right = ctx.expr()[1].accept(self)
-            if "%" in left or "%" in right:
-                print('pintamanhagaba')
-            else:
-                var = ctx.parentCtx.ID().getText()
-                tipo = self.func_vars[var][1]
-                idx = self.var_list.index(var) + 1
+            result_str = left[1] + right[1]
+            par_ctx = ctx.parentCtx
+            while not (isinstance(par_ctx, CymbolParser.VarDeclContext) or isinstance(par_ctx, CymbolParser.AssignStatContext)):
+                par_ctx = par_ctx.parentCtx
+            idx = self.var_list.index(par_ctx.ID().getText()) + 1
+            if ("%" in left[0] and not "%" in right[0]) or (not "%" in left[0] and "%" in right[0]):
+                missing = right if "%" in left[0] else left
+                got = left if "%" in left[0] else right
+                got = got[0]
+                missing = missing[0]
+                new_idx = len(self.var_list) + 1
+                self.var_list.append(new_idx)
+                tipo = self.func_vars[got]
+                self.func_vars["%"+str(new_idx)] = tipo
+                op_str = "\n  %{} = ".format(new_idx)
+                if ctx.op.text == "+":
+                    op_str += "add nsw "
+                elif ctx.op.text == "-":
+                    op_str += "sub nsw "
+                elif ctx.op.text == "*":
+                    op_str += "mul nsw "
+                elif ctx.op.text == "/":
+                    op_str += "sdiv "
+                if got == left:
+                    op_str += "{} {}, {}".format(tipo, got, missing)
+                else:
+                    op_str += "{} {}, {}".format(tipo, missing, got)
                 res = 0
-                store_str = ""
+                result_str += op_str
+                result_str += "\n  store {} %{}, {}* %{}, align {}".format(
+                    tipo, new_idx, tipo, idx, self.alignes[tipo])
+            elif "%" in left[0] and "%" in right[0]:
+                right = right[0]
+                left = left[0]
+                new_idx = len(self.var_list) + 1
+                self.var_list.append(new_idx)
+                tipo = self.func_vars[right]
+                self.func_vars["%"+str(new_idx)] = tipo
+                op_str = "\n  %{} = ".format(new_idx)
+                if ctx.op.text == "+":
+                    op_str += "add nsw "
+                elif ctx.op.text == "-":
+                    op_str += "sub nsw "
+                elif ctx.op.text == "*":
+                    op_str += "mul nsw "
+                elif ctx.op.text == "/":
+                    op_str += "sdiv "
+                op_str += "{} {}, {}".format(tipo, left, right)
+                res = 0
+                result_str += op_str
+                result_str += "\n  store {} %{}, {}* %{}, align {}".format(
+                    tipo, new_idx, tipo, idx, self.alignes[tipo])
+            else:
+                var = par_ctx.ID().getText()
+                tipo = self.func_vars[var][1]
+                res = 0
                 right = right[0]
                 left = left[0]
                 if tipo == "float":
-                    right = 1
-                    left = 1
+                    right = 1.00
+                    left = 1.00
                     # right = struct.unpack('!f', right.decode('hex'))[0]
                     # left = struct.unpack('!f', left.decode('hex'))[0]
                 else:
                     right = int(right)
                     left = int(left)
                 if ctx.op.text == "+":
-                    res = right + left
+                    res = left + right
                 elif ctx.op.text == "-":
-                    res = right - left
+                    res = left - right
                 elif ctx.op.text == "*":
-                    res = right * left
+                    res = left * right
                 elif ctx.op.text == "/":
-                    res = right / left
+                    res = left / right
                 elif ctx.op.text == "&&":
-                    res = right and left
+                    res = left and right
                 elif ctx.op.text == "||":
-                    res = right or left
+                    res = left or right
                 elif ctx.op.text == "==":
-                    res = right == left
+                    res = left == right
                 elif ctx.op.text == "!=":
-                    res = right != left
+                    res = left != right
+                elif ctx.op.text == ">=":
+                    res = left >= right
+                elif ctx.op.text == "<=":
+                    res = left <= right
+                elif ctx.op.text == ">":
+                    res = left > right
+                elif ctx.op.text == "<":
+                    res = left < right
                 if tipo == "float":
                     res = float_to_hex(res)
-                if tipo != 'float':
+                else:
                     res = int(res)
-                store_str = "\n  store {} {}, {}* %{}, align {}".format(tipo, res, tipo, idx, self.alignes[tipo])
-            return str(res), store_str
-                
-                
+                result_str += "\n  store {} {}, {}* %{}, align {}".format(
+                    tipo, res, tipo, idx, self.alignes[tipo])
+            return str(res), result_str
+
     def aggregateResult(self, aggregate: Type, next_result: Type):
         return next_result if next_result != None else aggregate
