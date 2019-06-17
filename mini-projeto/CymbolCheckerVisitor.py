@@ -9,8 +9,13 @@ def printError(ctx):
           "indefinidos para os tipos")
 
 
+def round_hex(c):
+	return str(0)
+
 def float_to_hex(f):
-    return hex(struct.unpack('<I', struct.pack('<f', f))[0])
+	f = float(f)
+	to_hex = hex(struct.unpack('<Q', struct.pack('<d', float(f)))[0])
+	return to_hex[:10]+ round_hex(to_hex[15]) + '0'*7
 
 
 class Type:
@@ -25,7 +30,7 @@ class CymbolCheckerVisitor(CymbolVisitor):
     start_file_str = "; ModuleID = \'test.c\'\nsource_filename = \"test.c\"\ntarget datalayout = \"e-m:e-i64:64-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-pc-linux-gnu\""
     attrs_str = "attributes #0 = { noinline nounwind optnone uwtable \"correctly-rounded-divide-sqrt-fp-math\"=\"false\" \"disable-tail-calls\"=\"false\" \"less-precise-fpmad\"=\"false\" \"no-frame-pointer-elim\"=\"true\" \"no-frame-pointer-elim-non-leaf\" \"no-infs-fp-math\"=\"false\" \"no-jump-tables\"=\"false\" \"no-nans-fp-math\"=\"false\" \"no-signed-zeros-fp-math\"=\"false\" \"no-trapping-math\"=\"false\" \"stack-protector-buffer-size\"=\"8\" \"target-cpu\"=\"x86-64\" \"target-features\"=\"+fxsr,+mmx,+sse,+sse2,+x87\" \"unsafe-fp-math\"=\"false\" \"use-soft-float\"=\"false\" }"
     llvm_config = "!llvm.module.flags = !{!0}\n!llvm.ident = !{!1}"
-    clang_config = "!1 = !{!\"clang version 6.0.0-1ubuntu2 (tags/RELEASE_600/final)\"}"
+    clang_config = "!0 = !{i32 1, !\"wchar_size\", i32 4}\n!1 = !{!\"clang version 6.0.0-1ubuntu2 (tags/RELEASE_600/final)\"}"
     funct_init_str = "; Function Attrs: noinline nounwind optnone uwtable\n"
     func_vars = {}
     func_params = {}
@@ -42,8 +47,8 @@ class CymbolCheckerVisitor(CymbolVisitor):
     def visitFiile(self, ctx: CymbolParser.FiileContext):
         print(self.start_file_str)
         self.visitChildren(ctx)
-        print('\n', self.attrs_str, '\n\n')
-        print(self.llvm_config, '\n\n')
+        print(self.attrs_str, '\n')
+        print(self.llvm_config, '\n')
         print(self.clang_config, '\n')
 
     # OK
@@ -122,8 +127,26 @@ class CymbolCheckerVisitor(CymbolVisitor):
                         var_decl_string, var_name = self.visit(x.varDecl())
                         result += var_decl_string
 
-        result += "\n}\n\n"
+        result += "\n}\n"
         self.var_list = []
+        digits = [str(x) for x in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]]
+        floats_strs = []
+        for i, x in enumerate(result):
+            if x == ".":
+                float_str = ""
+                j = i - 1
+                while result[j] in digits:
+                    j -= 1
+                k = i + 1
+                while result[k] in digits:
+                    k += 1
+                for indice in range(j + 1, k):
+                    float_str += result[indice]
+                floats_strs.append(float_str)
+        for fstr in floats_strs:
+            number = float(fstr)
+            hexax = float_to_hex(number)
+            result = result.replace(fstr, hexax)
         return result
 
     def visitVarDecl(self, ctx: CymbolParser.VarDeclContext):
@@ -235,12 +258,14 @@ class CymbolCheckerVisitor(CymbolVisitor):
                             tipo,  hm_vars + 2, tipo, hm_vars + 1)
                         self.var_list.append("%{}".format(hm_vars + 3))
                         self.func_vars["%{}".format(hm_vars + 3)] = tipo
+                        load_str = "  %{} = load {}, {}* %{}, align 4\n".format(
+                            hm_vars + 3, tipo, tipo, hm_vars + 1)
                         trunc_str = "  %{} = trunc i8 %{} to i1".format(
                             hm_vars + 4, hm_vars + 3)
                         self.var_list.append("%{}".format(hm_vars + 4))
                         self.func_vars["%{}".format(hm_vars + 4)] = tipo
                         real_ret = "%"+str(hm_vars + 4)
-                        full_str = new_tmp_str + zext_str + store_str + trunc_str
+                        full_str = new_tmp_str + zext_str + store_str + load_str + trunc_str
                     else:
                         new_tmp_str = "\n  %{} = alloca {}, align 4\n".format(
                             tmp_idx, tipo)
@@ -270,8 +295,8 @@ class CymbolCheckerVisitor(CymbolVisitor):
                     return ctx.INT().getText(), ""
                 if ctx.FLOAT() is not None:
                     real_ret = float(ctx.FLOAT().getText())
-                    real_ret = float_to_hex(real_ret)
-                    return real_ret, ""
+                    # real_ret = float_to_hex(real_ret)
+                    return str(real_ret), ""
                 if ctx.BOOLEAN() is not None:
                     return ctx.BOOLEAN().getText(), ""
             elif isinstance(ctx.parentCtx, CymbolParser.VarDeclContext):
@@ -282,10 +307,10 @@ class CymbolCheckerVisitor(CymbolVisitor):
                     return ctx.INT().getText(), assign_str
                 if ctx.FLOAT() is not None:
                     real_ret = float(ctx.FLOAT().getText())
-                    real_ret = float_to_hex(real_ret)
+                    # real_ret = float_to_hex(real_ret)
                     assign_str = "\n  store {} {}, {}* %{}, align {}".format(
                         tipo, real_ret, tipo, len(self.var_list), self.alignes[tipo])
-                    return real_ret, assign_str
+                    return str(real_ret), assign_str
                 if ctx.BOOLEAN() is not None:
                     assign_str = "\n  store {} {}, {}* %{}, align {}".format(
                         tipo, ctx.BOOLEAN().getText(), tipo, len(self.var_list), self.alignes[tipo])
@@ -295,8 +320,8 @@ class CymbolCheckerVisitor(CymbolVisitor):
                     return ctx.INT().getText(), ""
                 if ctx.FLOAT() is not None:
                     real_ret = float(ctx.FLOAT().getText())
-                    real_ret = float_to_hex(real_ret)
-                    return real_ret, ""
+                    # real_ret = float_to_hex(real_ret)
+                    return str(real_ret), ""
                 if ctx.BOOLEAN() is not None:
                     return ctx.BOOLEAN().getText(), ""
         # Operacoes
@@ -362,8 +387,8 @@ class CymbolCheckerVisitor(CymbolVisitor):
                 right = right[0]
                 left = left[0]
                 if tipo == "float":
-                    right = 1.00
-                    left = 1.00
+                    right = float(right)
+                    left = float(left)
                     # right = struct.unpack('!f', right.decode('hex'))[0]
                     # left = struct.unpack('!f', left.decode('hex'))[0]
                 else:
@@ -394,7 +419,7 @@ class CymbolCheckerVisitor(CymbolVisitor):
                 elif ctx.op.text == "<":
                     res = left < right
                 if tipo == "float":
-                    res = float_to_hex(res)
+                    res = round(res, 2)
                 else:
                     res = int(res)
                 result_str += "\n  store {} {}, {}* %{}, align {}".format(
